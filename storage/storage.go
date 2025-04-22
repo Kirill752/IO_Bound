@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -43,7 +44,7 @@ func newRedisClient(ctx context.Context, address, user, password string, db int)
 	return client, nil
 }
 
-func NewStorage(ctx context.Context, address, user, password string) (*Storage, error) {
+func New(ctx context.Context, address, user, password string) (*Storage, error) {
 	const op = "storage.NewStorage"
 	client, err := newRedisClient(ctx, address, user, password, 0)
 	if err != nil {
@@ -61,4 +62,42 @@ func (strg *Storage) Save(ctx context.Context, key string, t *task.Task) error {
 		return err
 	}
 	return strg.db.Set(ctx, key, data, 0).Err()
+}
+func (strg *Storage) Delete(ctx context.Context, key string) error {
+	deleted, err := strg.db.Del(ctx, key).Result()
+	if err != nil {
+		return fmt.Errorf("error while deleting key: %v", err)
+	}
+	if deleted == 1 {
+		log.Println("key successfully deleted")
+	} else {
+		return fmt.Errorf("key not found")
+	}
+	return nil
+}
+func (strg *Storage) Close() {
+	strg.db.Conn().Close()
+}
+
+func (strg *Storage) GetAll(ctx context.Context) {
+	keys, err := strg.db.Keys(ctx, "*").Result()
+	if err != nil {
+		log.Fatalf("error geting keys: %v", err)
+	}
+
+	fmt.Printf("Found %d keys:\n", len(keys))
+	for _, key := range keys {
+		keyType, err := strg.db.Type(ctx, key).Result()
+		if err != nil {
+			log.Printf("error geting key type %s: %v", key, err)
+			continue
+		}
+		fmt.Printf("Key: %s, Type: %s\n", key, keyType)
+		val, err := strg.db.Get(ctx, key).Result()
+		if err != nil {
+			log.Printf("error geting key value %s: %v", key, err)
+			continue
+		}
+		fmt.Printf("Value: %v\n", val)
+	}
 }

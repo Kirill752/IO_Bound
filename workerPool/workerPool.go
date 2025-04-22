@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sync"
 )
 
 type TaskHandler interface {
@@ -19,6 +20,9 @@ type WorkerPool struct {
 	handlers     map[string]TaskHandler // оброботчики для определенных типов задач
 	taskQueue    chan *task.Task        // очередь из задач
 	totalWorkers int                    // количество воркеров
+	wg           sync.WaitGroup
+	mtx          sync.Mutex
+	isRunning    bool
 }
 
 func New(db *storage.Storage, totalWorkers int) *WorkerPool {
@@ -39,19 +43,33 @@ func (wp *WorkerPool) NewHandler(handler TaskHandler) {
 }
 
 func (wp *WorkerPool) Start(ctx context.Context) {
+	wp.mtx.Lock()
+	defer wp.mtx.Unlock()
+	if wp.isRunning {
+		return
+	}
+	wp.isRunning = true
+	wp.wg.Add(wp.totalWorkers)
 	for range wp.totalWorkers {
 		go wp.worker(ctx)
 	}
 }
 
+func (wp *WorkerPool) Stop() {
+	wp.mtx.Lock()
+	defer wp.mtx.Unlock()
+	if !wp.isRunning {
+		return
+	}
+	wp.isRunning = false
+	close(wp.taskQueue)
+	wp.wg.Wait()
+}
+
 func (wp *WorkerPool) worker(ctx context.Context) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case t := <-wp.taskQueue:
-			wp.runTask(ctx, t)
-		}
+	defer wp.wg.Done()
+	for t := range wp.taskQueue {
+		wp.runTask(ctx, t)
 	}
 }
 
@@ -69,6 +87,7 @@ func (wp *WorkerPool) runTask(ctx context.Context, t *task.Task) {
 			return
 		}
 		if existTask.Status != 0 {
+			log.Printf("%s status is %s\n", existTask.ID, existTask.GetStatus())
 			return // Задача занята
 		}
 	}
@@ -99,6 +118,7 @@ func (wp *WorkerPool) runTask(ctx context.Context, t *task.Task) {
 		}
 		return
 	}
+	t.Status = task.Done
 	err = wp.db.Save(ctx, t.GetKey(), t)
 	if err != nil {
 		log.Printf("Failed to update task status: %v", err)
